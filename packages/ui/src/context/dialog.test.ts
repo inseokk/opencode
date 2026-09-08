@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test"
-import { createComponent } from "solid-js"
+import { createComponent, type Component, type JSX } from "solid-js"
 import { render } from "solid-js/web"
 
 type ElementProps = Record<string, unknown> & { children?: unknown }
@@ -16,13 +16,16 @@ function appendChildren(element: Node, children: unknown[]) {
   }
 }
 
-function createElement(type: unknown, props: ElementProps | null, ...children: unknown[]) {
+function createElement(type: unknown, props: ElementProps | null, ...children: unknown[]): JSX.Element {
   const attributes = props ?? {}
   const content = children.length > 0 ? children : [attributes.children]
 
   if (typeof type === "function") {
-    const result = createComponent(type, { ...attributes, children: content.length === 1 ? content[0] : content })
-    return typeof result === "function" ? result() : result
+    const result: unknown = createComponent(type as Component<{ children: unknown }>, {
+      ...attributes,
+      children: content.length === 1 ? content[0] : content,
+    })
+    return (typeof result === "function" ? (result as () => unknown)() : result) as JSX.Element
   }
 
   const element = document.createElement(String(type))
@@ -35,10 +38,10 @@ function createElement(type: unknown, props: ElementProps | null, ...children: u
     element.setAttribute(name, String(value))
   }
   appendChildren(element, content)
-  return element
+  return element as unknown as JSX.Element
 }
 
-globalThis.React = { createElement }
+globalThis.React = { createElement } as unknown as typeof globalThis.React
 
 let clickOverlay: (() => void) | undefined
 
@@ -90,7 +93,7 @@ describe("DialogProvider", () => {
     const dispose = render(
       () =>
         createComponent(DialogProvider, {
-          children: () => createComponent(TestApp, { onClose: () => closeCount++, onRender: () => renderCount++ }),
+          children: (() => createComponent(TestApp, { onClose: () => closeCount++, onRender: () => renderCount++ })) as unknown as JSX.Element,
         }),
       host,
     )
@@ -113,7 +116,7 @@ describe("DialogProvider", () => {
     const dispose = render(
       () =>
         createComponent(DialogProvider, {
-          children: () => createComponent(TestApp, { onClose: () => {} }),
+          children: (() => createComponent(TestApp, { onClose: () => {} })) as unknown as JSX.Element,
         }),
       host,
     )
