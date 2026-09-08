@@ -29,109 +29,139 @@ type Active = {
 
 const Context = createContext<ReturnType<typeof init>>()
 
+type DialogTimer = {
+  current: ReturnType<typeof setTimeout> | undefined
+}
+
+type DialogState = {
+  stack: () => Active[]
+  setStack: (updater: (items: Active[]) => Active[]) => void
+  timer: DialogTimer
+  lock: { value: boolean }
+}
+
+function clearTimer(timer: DialogTimer) {
+  if (timer.current === undefined) return
+  clearTimeout(timer.current)
+  timer.current = undefined
+}
+
+function getActiveDialog(items: Active[], id?: string) {
+  return id ? items.find((item) => item.id === id) : items.at(-1)
+}
+
+function closeActive(item: Active, state: DialogState) {
+  if (state.lock.value) return
+
+  state.lock.value = true
+  item.onClose?.()
+  item.setClosing(true)
+
+  const closed = item.id
+  clearTimer(state.timer)
+
+  state.timer.current = setTimeout(() => {
+    state.timer.current = undefined
+    item.dispose()
+    state.setStack((items) => items.filter((dialog) => dialog.id !== closed))
+    state.lock.value = false
+  }, 100)
+}
+
+function createEscapeHandler(close: (id?: string) => void) {
+  return (event: KeyboardEvent) => {
+    if (event.key !== "Escape") return
+    close()
+    event.preventDefault()
+    event.stopPropagation()
+  }
+}
+
+function createDialogNode(
+  element: DialogElement,
+  owner: Owner,
+  onClose: (() => void) | undefined,
+  layer: number,
+  close: (id?: string) => void,
+) {
+  const id = Math.random().toString(36).slice(2)
+  const zIndex = 50 + layer * 10
+  let dispose: (() => void) | undefined
+  let setClosing: ((closing: boolean) => void) | undefined
+
+  const node = runWithOwner(owner, () =>
+    createRoot((d: () => void) => {
+      dispose = d
+      const [closing, setClosingSignal] = createSignal(false)
+      setClosing = setClosingSignal
+      return (
+        <Kobalte
+          modal
+          open={!closing()}
+          onOpenChange={(open: boolean) => {
+            if (open) return
+            close(id)
+          }}
+        >
+          <Kobalte.Portal>
+            <Kobalte.Overlay
+              data-component="dialog-overlay"
+              style={{ "z-index": String(zIndex) }}
+              onClick={() => close(id)}
+            />
+            <div
+              data-dialog-layer={layer}
+              style={{
+                position: "fixed",
+                inset: "0",
+                "z-index": String(zIndex),
+                display: "flex",
+                "align-items": "center",
+                "justify-content": "center",
+                "pointer-events": "none",
+              }}
+            >
+              {element()}
+            </div>
+          </Kobalte.Portal>
+        </Kobalte>
+      )
+    }),
+  )
+
+  if (!dispose || !setClosing) return
+
+  return { id, node, dispose, owner, onClose, setClosing }
+}
+
 function init() {
   const [stack, setStack] = createSignal<Active[]>([])
-  const timer = { current: undefined as ReturnType<typeof setTimeout> | undefined }
+  const timer: DialogTimer = { current: undefined }
   const lock = { value: false }
 
   onCleanup(() => {
-    if (timer.current === undefined) return
-    clearTimeout(timer.current)
-    timer.current = undefined
+    clearTimer(timer)
   })
 
   const close = (id?: string) => {
-    const items = stack()
-    const current = id ? items.find((item) => item.id === id) : items.at(-1)
+    const current = getActiveDialog(stack(), id)
     if (!current || lock.value) return
-    lock.value = true
-    current.onClose?.()
-    current.setClosing(true)
-
-    const closed = current.id
-    if (timer.current !== undefined) {
-      clearTimeout(timer.current)
-      timer.current = undefined
-    }
-
-    timer.current = setTimeout(() => {
-      timer.current = undefined
-      current.dispose()
-      setStack((items) => items.filter((item) => item.id !== closed))
-      lock.value = false
-    }, 100)
+    closeActive(current, { stack, setStack, timer, lock })
   }
 
   createEffect(() => {
     if (stack().length === 0) return
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return
-      close()
-      event.preventDefault()
-      event.stopPropagation()
-    }
-
-    makeEventListener(window, "keydown", onKeyDown, { capture: true })
+    makeEventListener(window, "keydown", createEscapeHandler(close), { capture: true })
   })
 
   const mount = (element: DialogElement, owner: Owner, onClose: (() => void) | undefined, layer: number) => {
-    const id = Math.random().toString(36).slice(2)
-    const zIndex = 50 + layer * 10
-    let dispose: (() => void) | undefined
-    let setClosing: ((closing: boolean) => void) | undefined
-
-    const node = runWithOwner(owner, () =>
-      createRoot((d: () => void) => {
-        dispose = d
-        const [closing, setClosingSignal] = createSignal(false)
-        setClosing = setClosingSignal
-        return (
-          <Kobalte
-            modal
-            open={!closing()}
-            onOpenChange={(open: boolean) => {
-              if (open) return
-              close(id)
-            }}
-          >
-            <Kobalte.Portal>
-              <Kobalte.Overlay
-                data-component="dialog-overlay"
-                style={{ "z-index": String(zIndex) }}
-                onClick={() => close(id)}
-              />
-              <div
-                data-dialog-layer={layer}
-                style={{
-                  position: "fixed",
-                  inset: "0",
-                  "z-index": String(zIndex),
-                  display: "flex",
-                  "align-items": "center",
-                  "justify-content": "center",
-                  "pointer-events": "none",
-                }}
-              >
-                {element()}
-              </div>
-            </Kobalte.Portal>
-          </Kobalte>
-        )
-      }),
-    )
-
-    if (!dispose || !setClosing) return
-
-    const active: Active = { id, node, dispose, owner, onClose, setClosing }
+    const active = createDialogNode(element, owner, onClose, layer, close)
+    if (!active) return
     setStack((items) => [...items, active])
   }
 
   const push = (element: DialogElement, owner: Owner, onClose?: () => void) => {
-    if (timer.current !== undefined) {
-      clearTimeout(timer.current)
-      timer.current = undefined
-    }
+    clearTimer(timer)
     lock.value = false
     mount(element, owner, onClose, stack().length)
   }
@@ -139,10 +169,7 @@ function init() {
   const show = (element: DialogElement, owner: Owner, onClose?: () => void) => {
     for (const item of stack()) item.dispose()
     setStack([])
-    if (timer.current !== undefined) {
-      clearTimeout(timer.current)
-      timer.current = undefined
-    }
+    clearTimer(timer)
     lock.value = false
     mount(element, owner, onClose, 0)
   }
